@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,6 +68,14 @@ func (p *StreamProxy) ServeStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Treat this segment/playlist fetch as an implicit heartbeat so that
+	// external players (VLC/mpv/IINA) that don't call the explicit
+	// heartbeat endpoint keep their session alive while actively streaming.
+	// Fire-and-forget: an error here shouldn't abort the proxy.
+	if err := p.db.UpdateSessionHeartbeat(r.Context(), sessionID, nil); err != nil {
+		log.Printf("implicit heartbeat update failed for %s: %v", sessionID, err)
+	}
+
 	// Get the share
 	share, err := p.db.GetShareByID(r.Context(), session.ShareID)
 	if err != nil || share == nil || !share.IsValid() {
@@ -89,14 +98,15 @@ func (p *StreamProxy) ServeStream(w http.ResponseWriter, r *http.Request) {
 		itemID = mediaSourceID
 	}
 
-	// Build Jellyfin URL
-	jellyfinURL := p.buildJellyfinStreamURL(itemID, path, r.URL.RawQuery)
+	// Build Jellyfin URL (sessionIDStr is used as PlaySessionId so Jellyfin
+	// can register the TranscodingJob for this viewer)
+	jellyfinURL := p.buildJellyfinStreamURL(itemID, path, r.URL.RawQuery, sessionIDStr)
 
 	// Proxy the request
 	p.proxyRequest(w, r, jellyfinURL)
 }
 
-func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string) string {
+func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query, playSessionID string) string {
 	baseURL := p.jf.BaseURL()
 
 	// Parse existing query and ensure api_key is set (don't duplicate)
@@ -111,16 +121,60 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string) string 
 		if path == "master.m3u8" {
 			params.Set("MediaSourceId", itemID)
 			params.Set("DeviceId", "jfshare-backend")
+
+			// PlaySessionId is REQUIRED. Without it, Jellyfin returns a
+			// playlist but never registers a TranscodingJob, so every
+			// segment request hits "no transcode is running".
+			params.Set("PlaySessionId", playSessionID)
+
+			// Codec hints for Chrome/Firefox/Safari.
+			// Jellyfin will direct-stream when the source already matches
+			// these codecs, and transcode otherwise.
+			//   AAC listed first  => AAC is used whenever audio must be transcoded.
+			//   AC3 listed second => AC3 passthrough when the source is already AC3.
+			params.Set("VideoCodec", "h264")
+			params.Set("AudioCodec", "aac,ac3")
+			params.Set("TranscodingMaxAudioChannels", "2") // stereo downmix when transcoding
+			params.Set("SegmentContainer", "ts")
+
+			// Bitrate caps — client-overridable within a safety ceiling.
+			// Client picks a preset on the share page, we clamp so nobody
+			// can request a 500 Mbps stream by editing the URL.
+			const maxAllowedBitrate = 20000000 // 20 Mbps hard ceiling
+			if vb := params.Get("VideoBitrate"); vb != "" {
+				if n, err := strconv.Atoi(vb); err == nil && n > maxAllowedBitrate {
+					params.Set("VideoBitrate", strconv.Itoa(maxAllowedBitrate))
+				}
+			} else {
+				params.Set("VideoBitrate", "8000000")
+			}
+			if mb := params.Get("MaxStreamingBitrate"); mb != "" {
+				if n, err := strconv.Atoi(mb); err == nil && n > maxAllowedBitrate {
+					params.Set("MaxStreamingBitrate", strconv.Itoa(maxAllowedBitrate))
+				}
+			}
+			if params.Get("AudioBitrate") == "" {
+				params.Set("AudioBitrate", "192000")
+			}
+
+			// MaxWidth/MaxHeight and AudioStreamIndex pass through untouched
+			// if the client sent them — they're exactly the right names for
+			// Jellyfin's master.m3u8 endpoint.
+
 			return baseURL + "/Videos/" + itemID + "/master.m3u8?" + params.Encode()
 		}
-		// Sub-playlist
+		// Sub-playlist - forward client params as-is
 		return baseURL + "/Videos/" + itemID + "/" + path + "?" + params.Encode()
 	}
 
 	if strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".m4s") || strings.HasSuffix(path, ".mp4") {
-		// Segment file - remove AudioCodec param as it can confuse FFmpeg
-		// (AudioCodec=m3u8 from manifest URLs is not a valid codec)
-		params.Del("AudioCodec")
+		// Segment file - remove AudioCodec param only when it's the bogus
+		// "m3u8" value (URL extension leaking through). Preserve valid
+		// values like "copy", "aac", "ac3" — Jellyfin uses them in the
+		// transcode-session hash and stripping them breaks segment lookup.
+		if params.Get("AudioCodec") == "m3u8" {
+			params.Del("AudioCodec")
+		}
 		return baseURL + "/Videos/" + itemID + "/" + path + "?" + params.Encode()
 	}
 

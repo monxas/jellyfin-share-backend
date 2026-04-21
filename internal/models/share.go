@@ -102,6 +102,18 @@ type SharePublicInfo struct {
 	Directors       []string          `json:"directors,omitempty"`
 	Actors          []ActorInfo       `json:"actors,omitempty"`
 	VideoQuality    *VideoQualityInfo `json:"videoQuality,omitempty"`
+	AudioTracks     []AudioTrackInfo  `json:"audioTracks,omitempty"`
+}
+
+// AudioTrackInfo describes one selectable audio stream for the public share view.
+type AudioTrackInfo struct {
+	Index        int    `json:"index"`            // Jellyfin MediaStream.Index — pass to AudioStreamIndex
+	Codec        string `json:"codec,omitempty"`  // e.g. "ac3", "aac", "dts"
+	Language     string `json:"language,omitempty"`
+	Title        string `json:"title,omitempty"`
+	DisplayTitle string `json:"displayTitle,omitempty"`
+	Channels     int    `json:"channels,omitempty"`
+	IsDefault    bool   `json:"isDefault,omitempty"`
 }
 
 type ActorInfo struct {

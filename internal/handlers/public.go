@@ -127,7 +127,7 @@ func (h *PublicHandler) enrichShareInfo(info *models.SharePublicInfo, item *jell
 		info.LogoURL = h.cfg.PublicBaseURL + "/api/public/images/" + token + "/logo"
 	}
 
-	// Video quality info
+	// Video quality info + audio tracks
 	if len(item.MediaSources) > 0 {
 		ms := item.MediaSources[0]
 		quality := &models.VideoQualityInfo{
@@ -147,6 +147,15 @@ func (h *PublicHandler) enrichShareInfo(info *models.SharePublicInfo, item *jell
 				if quality.AudioCodec == "" {
 					quality.AudioCodec = stream.Codec
 				}
+				info.AudioTracks = append(info.AudioTracks, models.AudioTrackInfo{
+					Index:        stream.Index,
+					Codec:        stream.Codec,
+					Language:     stream.Language,
+					Title:        stream.Title,
+					DisplayTitle: stream.DisplayTitle,
+					Channels:     stream.Channels,
+					IsDefault:    stream.IsDefault,
+				})
 			}
 		}
 

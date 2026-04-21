@@ -18,7 +18,53 @@
   let isPlaying = false;
   let playbackData = null;
   let playError = '';
+  let copiedMsg = '';
+  let copyBusy = false;
   let imageLoaded = !shareInfo.posterUrl;
+
+  // Video quality presets. MaxBitrate == null means "don't cap" (Auto).
+  const qualityPresets = [
+    { id: 'auto',  label: 'Auto (up to 8 Mbps)', maxBitrate: 8000000, maxHeight: null },
+    { id: '1080p', label: '1080p — 8 Mbps',      maxBitrate: 8000000, maxHeight: 1080 },
+    { id: '720p',  label: '720p — 4 Mbps',       maxBitrate: 4000000, maxHeight: 720 },
+    { id: '480p',  label: '480p — 2 Mbps',       maxBitrate: 2000000, maxHeight: 480 },
+  ];
+  let selectedQualityId = 'auto';
+  let selectedAudioIndex = null;
+
+  // When the share info loads, pick the default audio track: prefer
+  // IsDefault=true, fall back to the first track, leave null if none.
+  $: if (shareInfo.audioTracks && shareInfo.audioTracks.length > 0 && selectedAudioIndex === null) {
+    const def = shareInfo.audioTracks.find(t => t.isDefault);
+    selectedAudioIndex = def ? def.index : shareInfo.audioTracks[0].index;
+  }
+
+  function audioLabel(track) {
+    const bits = [];
+    if (track.language) bits.push(track.language.toUpperCase());
+    if (track.codec)    bits.push(track.codec.toUpperCase());
+    if (track.channels) bits.push(track.channels === 2 ? 'Stereo' : `${track.channels}ch`);
+    const tail = bits.join(' · ');
+    if (track.title) return tail ? `${track.title} (${tail})` : track.title;
+    return tail || `Track ${track.index}`;
+  }
+
+  function buildStreamParams() {
+    const q = qualityPresets.find(p => p.id === selectedQualityId) || qualityPresets[0];
+    const p = new URLSearchParams();
+    if (q.maxBitrate) p.set('VideoBitrate', String(q.maxBitrate));
+    if (q.maxBitrate) p.set('MaxStreamingBitrate', String(q.maxBitrate));
+    if (q.maxHeight)  p.set('MaxHeight', String(q.maxHeight));
+    if (selectedAudioIndex !== null && selectedAudioIndex !== undefined) {
+      p.set('AudioStreamIndex', String(selectedAudioIndex));
+    }
+    return p.toString();
+  }
+
+  function appendParams(url, paramStr) {
+    if (!paramStr) return url;
+    return url + (url.includes('?') ? '&' : '?') + paramStr;
+  }
   let showFullCast = false;
   let currentPlayingTitle = '';
 
@@ -143,6 +189,7 @@
         return;
       }
       playbackData = await response.json();
+      playbackData.playbackUrl = appendParams(playbackData.playbackUrl, buildStreamParams());
       currentPlayingTitle = shareInfo.title;
       isPlaying = true;
     } catch (e) {
@@ -164,6 +211,7 @@
         return;
       }
       playbackData = await response.json();
+      playbackData.playbackUrl = appendParams(playbackData.playbackUrl, buildStreamParams());
       currentPlayingTitle = `E${episode.indexNumber}: ${episode.name}`;
       isPlaying = true;
     } catch (e) {
@@ -175,6 +223,50 @@
     isPlaying = false;
     playbackData = null;
     currentPlayingTitle = '';
+  }
+
+  // Shared helper: POST to a /play endpoint and copy the returned URL.
+  async function copyStreamUrlFromEndpoint(endpoint, label) {
+    if (copyBusy) return;
+    copyBusy = true;
+    playError = '';
+    copiedMsg = '';
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        playError = data.error || 'Failed to create stream URL';
+        return;
+      }
+      const data = await response.json();
+      const finalUrl = appendParams(data.playbackUrl, buildStreamParams());
+      await navigator.clipboard.writeText(finalUrl);
+      copiedMsg = `${label} copied`;
+      setTimeout(() => { copiedMsg = ''; }, 3000);
+    } catch (e) {
+      playError = 'Failed to copy stream URL';
+    } finally {
+      copyBusy = false;
+    }
+  }
+
+  function copyStreamUrl() {
+    return copyStreamUrlFromEndpoint(
+      `/api/public/shares/${token}/play`,
+      'Stream URL'
+    );
+  }
+
+  function copyEpisodeStreamUrl(episode, event) {
+    event.stopPropagation(); // don't trigger episode-card's Play handler
+    return copyStreamUrlFromEndpoint(
+      `/api/public/shares/${token}/episodes/${episode.id}/play`,
+      `E${episode.indexNumber || '?'} stream URL`
+    );
   }
 
   function handleImageLoad() {
@@ -432,10 +524,25 @@
                             <div class="episode-meta">{formatDuration(episode.runtimeSeconds)}</div>
                           {/if}
                         </div>
-                        <div class="episode-play">
-                          <svg viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M8 5v14l11-7z"/>
-                          </svg>
+                        <div class="episode-actions">
+                          <span
+                            class="episode-copy"
+                            role="button"
+                            tabindex="0"
+                            on:click={(e) => copyEpisodeStreamUrl(episode, e)}
+                            on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') copyEpisodeStreamUrl(episode, e); }}
+                            title="Copy stream URL for VLC/mpv/IINA"
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                            </svg>
+                          </span>
+                          <div class="episode-play">
+                            <svg viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M8 5v14l11-7z"/>
+                            </svg>
+                          </div>
                         </div>
                       </button>
                     {/each}
@@ -447,14 +554,46 @@
                 {/if}
               </div>
             {:else}
-              <button class="play-button" on:click={startPlayback}>
-                <div class="play-icon">
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M8 5v14l11-7z"/>
+              <div class="stream-options">
+                <label class="option-row">
+                  <span class="option-label">Quality</span>
+                  <select bind:value={selectedQualityId} class="option-select">
+                    {#each qualityPresets as preset}
+                      <option value={preset.id}>{preset.label}</option>
+                    {/each}
+                  </select>
+                </label>
+                {#if shareInfo.audioTracks && shareInfo.audioTracks.length > 1}
+                  <label class="option-row">
+                    <span class="option-label">Audio</span>
+                    <select bind:value={selectedAudioIndex} class="option-select">
+                      {#each shareInfo.audioTracks as track}
+                        <option value={track.index}>{audioLabel(track)}</option>
+                      {/each}
+                    </select>
+                  </label>
+                {/if}
+              </div>
+              <div class="play-actions">
+                <button class="play-button" on:click={startPlayback}>
+                  <div class="play-icon">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M8 5v14l11-7z"/>
+                    </svg>
+                  </div>
+                  <span>Play Now</span>
+                </button>
+                <button class="copy-url-button" on:click={copyStreamUrl} disabled={copyBusy} title="Copy stream URL for VLC/mpv/IINA">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
                   </svg>
-                </div>
-                <span>Play Now</span>
-              </button>
+                  <span>{copyBusy ? 'Copying…' : 'Copy URL'}</span>
+                </button>
+              </div>
+              {#if copiedMsg}
+                <p class="copied-msg">{copiedMsg}</p>
+              {/if}
               {#if playError}
                 <p class="error-msg">{playError}</p>
               {/if}
@@ -983,6 +1122,114 @@
     color: #ff6b6b;
     font-size: 0.85rem;
     margin: 0.75rem 0 0 0;
+  }
+
+  .play-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+  }
+
+  .stream-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+  }
+
+  .option-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    padding: 0.35rem 0.5rem 0.35rem 0.9rem;
+  }
+
+  .option-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: rgba(255, 255, 255, 0.55);
+  }
+
+  .option-select {
+    background: transparent;
+    color: #fff;
+    border: none;
+    outline: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+    padding: 0.35rem 0.5rem;
+    cursor: pointer;
+    min-width: 140px;
+  }
+  .option-select option {
+    background: #1a1a1a;
+    color: #fff;
+  }
+
+  .copy-url-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem;
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 12px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .copy-url-button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.3);
+  }
+  .copy-url-button:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .copy-url-button svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .copied-msg {
+    color: #00d4ff;
+    font-size: 0.85rem;
+    margin: 0.75rem 0 0 0;
+  }
+
+  .episode-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .episode-copy {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    color: rgba(255, 255, 255, 0.6);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .episode-copy:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #00d4ff;
+  }
+  .episode-copy svg {
+    width: 16px;
+    height: 16px;
   }
 
   /* Episodes Section */
