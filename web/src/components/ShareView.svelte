@@ -27,6 +27,12 @@
   let episodesLoading = false;
   let episodesError = '';
 
+  // Series drill-down state
+  let selectedSeason = null;
+  let seasonEpisodes = [];
+  let seasonEpisodesLoading = false;
+  let seasonEpisodesError = '';
+
   onMount(async () => {
     const timeout = setTimeout(() => {
       imageLoaded = true;
@@ -65,6 +71,35 @@
     } finally {
       episodesLoading = false;
     }
+  }
+
+  async function loadSeasonEpisodes(season) {
+    selectedSeason = season;
+    seasonEpisodesLoading = true;
+    seasonEpisodesError = '';
+    seasonEpisodes = [];
+    try {
+      const response = await fetch(`/api/public/shares/${token}/episodes?seasonId=${season.id}`, {
+        credentials: 'include'
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        seasonEpisodesError = data.error || 'Failed to load episodes';
+        return;
+      }
+      const data = await response.json();
+      seasonEpisodes = data.episodes || [];
+    } catch (e) {
+      seasonEpisodesError = 'Failed to load episodes';
+    } finally {
+      seasonEpisodesLoading = false;
+    }
+  }
+
+  function goBackToSeasons() {
+    selectedSeason = null;
+    seasonEpisodes = [];
+    seasonEpisodesError = '';
   }
 
   function formatDuration(seconds) {
@@ -403,43 +438,97 @@
             {#if isSeasonOrSeries}
               <!-- Episode List for Season/Series -->
               <div class="episodes-section">
-                <h3 class="episodes-header">
-                  {shareInfo.itemType === 'Season' ? 'Episodes' : 'Seasons'}
-                  {#if episodes.length > 0}
-                    <span class="episodes-count">({episodes.length})</span>
-                  {/if}
-                </h3>
+                {#if shareInfo.itemType === 'Series' && selectedSeason}
+                  <!-- Drilled into a season -->
+                  <h3 class="episodes-header">
+                    <button class="back-btn" on:click={goBackToSeasons}>
+                      <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+                      </svg>
+                    </button>
+                    {selectedSeason.name}
+                    {#if seasonEpisodes.length > 0}
+                      <span class="episodes-count">({seasonEpisodes.length})</span>
+                    {/if}
+                  </h3>
 
-                {#if episodesLoading}
-                  <div class="episodes-loading">
-                    <div class="loading-spinner"></div>
-                    <span>Loading {shareInfo.itemType === 'Season' ? 'episodes' : 'seasons'}...</span>
-                  </div>
-                {:else if episodesError}
-                  <p class="error-msg">{episodesError}</p>
-                {:else if episodes.length === 0}
-                  <p class="episodes-empty">No {shareInfo.itemType === 'Season' ? 'episodes' : 'seasons'} found</p>
+                  {#if seasonEpisodesLoading}
+                    <div class="episodes-loading">
+                      <div class="loading-spinner"></div>
+                      <span>Loading episodes...</span>
+                    </div>
+                  {:else if seasonEpisodesError}
+                    <p class="error-msg">{seasonEpisodesError}</p>
+                  {:else if seasonEpisodes.length === 0}
+                    <p class="episodes-empty">No episodes found</p>
+                  {:else}
+                    <div class="episodes-list">
+                      {#each seasonEpisodes as episode}
+                        <button class="episode-card" on:click={() => startEpisodePlayback(episode)}>
+                          <div class="episode-number">
+                            {episode.indexNumber || '?'}
+                          </div>
+                          <div class="episode-info">
+                            <div class="episode-title">{episode.name}</div>
+                            {#if episode.runtimeSeconds}
+                              <div class="episode-meta">{formatDuration(episode.runtimeSeconds)}</div>
+                            {/if}
+                          </div>
+                          <div class="episode-play">
+                            <svg viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M8 5v14l11-7z"/>
+                            </svg>
+                          </div>
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
                 {:else}
-                  <div class="episodes-list">
-                    {#each episodes as episode}
-                      <button class="episode-card" on:click={() => startEpisodePlayback(episode)}>
-                        <div class="episode-number">
-                          {episode.indexNumber || '?'}
-                        </div>
-                        <div class="episode-info">
-                          <div class="episode-title">{episode.name}</div>
-                          {#if episode.runtimeSeconds}
-                            <div class="episode-meta">{formatDuration(episode.runtimeSeconds)}</div>
-                          {/if}
-                        </div>
-                        <div class="episode-play">
-                          <svg viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M8 5v14l11-7z"/>
-                          </svg>
-                        </div>
-                      </button>
-                    {/each}
-                  </div>
+                  <!-- Season list (for Series) or Episode list (for Season) -->
+                  <h3 class="episodes-header">
+                    {shareInfo.itemType === 'Season' ? 'Episodes' : 'Seasons'}
+                    {#if episodes.length > 0}
+                      <span class="episodes-count">({episodes.length})</span>
+                    {/if}
+                  </h3>
+
+                  {#if episodesLoading}
+                    <div class="episodes-loading">
+                      <div class="loading-spinner"></div>
+                      <span>Loading {shareInfo.itemType === 'Season' ? 'episodes' : 'seasons'}...</span>
+                    </div>
+                  {:else if episodesError}
+                    <p class="error-msg">{episodesError}</p>
+                  {:else if episodes.length === 0}
+                    <p class="episodes-empty">No {shareInfo.itemType === 'Season' ? 'episodes' : 'seasons'} found</p>
+                  {:else}
+                    <div class="episodes-list">
+                      {#each episodes as episode}
+                        <button class="episode-card" on:click={() => shareInfo.itemType === 'Series' ? loadSeasonEpisodes(episode) : startEpisodePlayback(episode)}>
+                          <div class="episode-number">
+                            {episode.indexNumber || '?'}
+                          </div>
+                          <div class="episode-info">
+                            <div class="episode-title">{episode.name}</div>
+                            {#if episode.runtimeSeconds}
+                              <div class="episode-meta">{formatDuration(episode.runtimeSeconds)}</div>
+                            {/if}
+                          </div>
+                          <div class="episode-play">
+                            {#if shareInfo.itemType === 'Series'}
+                              <svg viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>
+                              </svg>
+                            {:else}
+                              <svg viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M8 5v14l11-7z"/>
+                              </svg>
+                            {/if}
+                          </div>
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
                 {/if}
 
                 {#if playError}
@@ -1135,6 +1224,32 @@
     height: 14px;
     color: #00d4ff;
     margin-left: 2px;
+  }
+
+  .back-btn {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.8);
+    transition: all 0.2s ease;
+    padding: 0;
+    flex-shrink: 0;
+  }
+
+  .back-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.4);
+  }
+
+  .back-btn svg {
+    width: 18px;
+    height: 18px;
   }
 
   .episode-card:hover .episode-play {
