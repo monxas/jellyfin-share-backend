@@ -117,8 +117,8 @@ func (db *DB) GetShareAnalytics(ctx context.Context, shareID uuid.UUID) (*ShareA
 	// Get average watch time from sessions
 	var avgWatchTime float64
 	err = db.GetContext(ctx, &avgWatchTime, `
-		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - started_at))), 0)
-		FROM sessions WHERE share_id = $1
+		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (COALESCE(finished_at, NOW()) - started_at))), 0)
+		FROM share_sessions WHERE share_id = $1
 	`, shareID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get avg watch time: %w", err)
@@ -132,13 +132,17 @@ func (db *DB) GetShareAnalytics(ctx context.Context, shareID uuid.UUID) (*ShareA
 	}
 	var dailyRows []dailyRow
 	err = db.SelectContext(ctx, &dailyRows, `
-		SELECT DATE(created_at) as date, COUNT(*) as views
-		FROM audit_logs
-		WHERE share_id = $1
-			AND event_type = 'playback_started'
-			AND created_at >= NOW() - INTERVAL '30 days'
-		GROUP BY DATE(created_at)
-		ORDER BY date DESC
+		SELECT d::date as date, COUNT(a.id) as views
+		FROM generate_series(
+			(NOW() - INTERVAL '29 days')::date,
+			NOW()::date,
+			'1 day'::interval
+		) d
+		LEFT JOIN audit_logs a ON DATE(a.created_at) = d::date
+			AND a.share_id = $1
+			AND a.event_type = 'playback_started'
+		GROUP BY d::date
+		ORDER BY d::date DESC
 	`, shareID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get daily views: %w", err)
