@@ -28,6 +28,13 @@ type ShareSession struct {
 	FinishedAt        sql.NullTime      `db:"finished_at" json:"finishedAt,omitempty"`
 	TerminatedReason  sql.NullString    `db:"terminated_reason" json:"terminatedReason,omitempty"`
 	LastPositionSecs  sql.NullInt64     `db:"last_position_secs" json:"lastPositionSecs,omitempty"`
+	// JellyfinItemID pins what this session may stream. The stream proxy uses it
+	// instead of trusting an item id from the viewer's query string.
+	JellyfinItemID    sql.NullString    `db:"jellyfin_item_id" json:"-"`
+	// Audio/subtitle selection, validated once at play time and pinned here for the
+	// same reason as JellyfinItemID: the proxy must not read it from the request.
+	AudioStreamIndex    sql.NullInt64 `db:"audio_stream_index" json:"-"`
+	SubtitleStreamIndex sql.NullInt64 `db:"subtitle_stream_index" json:"-"`
 }
 
 func (s *ShareSession) IsActive(heartbeatTimeout time.Duration) bool {

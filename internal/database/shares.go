@@ -115,6 +115,8 @@ func (db *DB) UpdateShare(ctx context.Context, id uuid.UUID, maxTotalPlays, maxC
 	}
 
 	if extendMinutes != nil {
+		// A NULL expiry stays NULL: extending a share that never expires is a no-op
+		// rather than silently giving it a deadline.
 		updates = append(updates, fmt.Sprintf("expires_at = expires_at + INTERVAL '%d minutes'", *extendMinutes))
 	}
 
@@ -185,14 +187,14 @@ func (db *DB) UpdateLastActivity(ctx context.Context, shareID uuid.UUID) error {
 
 func (db *DB) GetActiveSharesCount(ctx context.Context) (int, error) {
 	var count int
-	query := `SELECT COUNT(*) FROM shares WHERE revoked_at IS NULL AND expires_at > NOW()`
+	query := `SELECT COUNT(*) FROM shares WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())`
 	err := db.GetContext(ctx, &count, query)
 	return count, err
 }
 
 func (db *DB) CleanupExpiredShares(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
-	query := `DELETE FROM shares WHERE expires_at < $1 AND revoked_at IS NOT NULL`
+	query := `DELETE FROM shares WHERE expires_at IS NOT NULL AND expires_at < $1 AND revoked_at IS NOT NULL`
 	result, err := db.ExecContext(ctx, query, cutoff)
 	if err != nil {
 		return 0, err

@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
+	"strconv"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -67,6 +69,9 @@ func (h *PublicHandler) GetShareInfo(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to fetch Jellyfin item %s: %v", share.JellyfinItemID, err)
 	} else if item != nil {
 		h.enrichShareInfo(&info, item, token)
+	}
+	if item != nil || share.ItemType == "Series" || share.ItemType == "Season" {
+		info.AudioTracks, info.SubtitleTracks = h.tracksForItem(r.Context(), item, share.ItemType, share.JellyfinItemID)
 	}
 
 	writeJSON(w, http.StatusOK, info)
@@ -142,7 +147,7 @@ func (h *PublicHandler) enrichShareInfo(info *models.SharePublicInfo, item *jell
 				quality.Width = stream.Width
 				quality.Height = stream.Height
 				quality.Codec = stream.Codec
-				quality.Resolution = getResolutionLabel(stream.Height)
+				quality.Resolution = getResolutionLabel(stream.Width, stream.Height)
 			case "Audio":
 				if quality.AudioCodec == "" {
 					quality.AudioCodec = stream.Codec
@@ -156,21 +161,141 @@ func (h *PublicHandler) enrichShareInfo(info *models.SharePublicInfo, item *jell
 	}
 }
 
-func getResolutionLabel(height int) string {
+// getResolutionLabel classifies a video stream the way Jellyfin's own clients do:
+// primarily by width, with height only as a fallback. Classifying by height alone
+// mislabels every letterboxed release - a 2.40:1 scope film is 1920x800, which is
+// Full HD but falls below a 1080-height threshold and gets tagged "720p".
+func getResolutionLabel(width, height int) string {
 	switch {
-	case height >= 2160:
+	case width >= 3800 || height >= 2000:
 		return "4K"
-	case height >= 1440:
+	case width >= 2500 || height >= 1400:
 		return "1440p"
-	case height >= 1080:
+	case width >= 1900 || height >= 1000:
 		return "1080p"
-	case height >= 720:
+	case width >= 1260 || height >= 700:
 		return "720p"
-	case height >= 480:
+	case width >= 700 || height >= 400:
 		return "480p"
 	default:
 		return ""
 	}
+}
+
+func extractTracks(ms jellyfin.MediaSource) ([]models.AudioTrack, []models.SubtitleTrack) {
+	var audio []models.AudioTrack
+	var subs []models.SubtitleTrack
+	for _, stream := range ms.MediaStreams {
+		switch stream.Type {
+		case "Audio":
+			audio = append(audio, models.AudioTrack{
+				Index:        stream.Index,
+				Language:     stream.Language,
+				DisplayTitle: stream.DisplayTitle,
+				Codec:        stream.Codec,
+				Channels:     stream.Channels,
+				IsDefault:    stream.IsDefault,
+			})
+		case "Subtitle":
+			subs = append(subs, models.SubtitleTrack{
+				Index:        stream.Index,
+				Language:     stream.Language,
+				DisplayTitle: stream.DisplayTitle,
+				Codec:        stream.Codec,
+				IsDefault:    stream.IsDefault,
+				IsForced:     stream.IsForced,
+			})
+		}
+	}
+	return audio, subs
+}
+
+// tracksForItem returns the selectable tracks of an item. A Series carries no media
+// streams itself, so fall back to its first episode - one traversal, not one per
+// track kind.
+func (h *PublicHandler) tracksForItem(ctx context.Context, item *jellyfin.ItemInfo, itemType, itemID string) ([]models.AudioTrack, []models.SubtitleTrack) {
+	if item != nil && len(item.MediaSources) > 0 {
+		return extractTracks(item.MediaSources[0])
+	}
+	if itemType != "Series" && itemType != "Season" {
+		return nil, nil
+	}
+	episodeID := ""
+	if itemType == "Season" {
+		if eps, err := h.jf.GetSeasonEpisodes(ctx, itemID); err == nil && len(eps) > 0 {
+			episodeID = eps[0].ID
+		}
+	} else {
+		if seasons, err := h.jf.GetSeriesSeasons(ctx, itemID); err == nil && len(seasons) > 0 {
+			if eps, err := h.jf.GetSeasonEpisodes(ctx, seasons[0].ID); err == nil && len(eps) > 0 {
+				episodeID = eps[0].ID
+			}
+		}
+	}
+	if episodeID == "" {
+		return nil, nil
+	}
+	ep, err := h.jf.GetItem(ctx, episodeID)
+	if err != nil || ep == nil || len(ep.MediaSources) == 0 {
+		return nil, nil
+	}
+	return extractTracks(ep.MediaSources[0])
+}
+
+// resolveTrackSelection validates a requested stream index against what the item
+// actually offers. An unknown index is rejected rather than passed to Jellyfin.
+func resolveTrackSelection(raw string, audio []models.AudioTrack, subs []models.SubtitleTrack, wantAudio bool) (sql.NullInt64, bool) {
+	if raw == "" {
+		return sql.NullInt64{}, true
+	}
+	idx, err := strconv.Atoi(raw)
+	if err != nil {
+		return sql.NullInt64{}, false
+	}
+	if wantAudio {
+		for _, t := range audio {
+			if t.Index == idx {
+				return sql.NullInt64{Int64: int64(idx), Valid: true}, true
+			}
+		}
+		return sql.NullInt64{}, false
+	}
+	for _, t := range subs {
+		if t.Index == idx {
+			return sql.NullInt64{Int64: int64(idx), Valid: true}, true
+		}
+	}
+	return sql.NullInt64{}, false
+}
+
+// pinTrackSelection validates the requested audio/subtitle indices for itemID and
+// writes them onto the session. Returns false if the viewer asked for a track the
+// item does not have.
+func (h *PublicHandler) pinTrackSelection(r *http.Request, session *models.ShareSession, itemType, itemID string) bool {
+	wantAudio := r.URL.Query().Get("audioStreamIndex")
+	wantSubs := r.URL.Query().Get("subtitleStreamIndex")
+	if wantAudio == "" && wantSubs == "" {
+		return true
+	}
+
+	item, err := h.jf.GetItem(r.Context(), itemID)
+	if err != nil {
+		log.Printf("Failed to fetch item %s for track selection: %v", itemID, err)
+		return false
+	}
+	audio, subs := h.tracksForItem(r.Context(), item, itemType, itemID)
+
+	a, ok := resolveTrackSelection(wantAudio, audio, subs, true)
+	if !ok {
+		return false
+	}
+	b, ok := resolveTrackSelection(wantSubs, audio, subs, false)
+	if !ok {
+		return false
+	}
+	session.AudioStreamIndex = a
+	session.SubtitleStreamIndex = b
+	return true
 }
 
 func (h *PublicHandler) ValidatePassword(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +401,7 @@ func (h *PublicHandler) StartPlayback(w http.ResponseWriter, r *http.Request) {
 		SessionToken:    sessionToken,
 		StartedAt:       time.Now(),
 		LastHeartbeatAt: time.Now(),
+		JellyfinItemID:  sql.NullString{String: share.JellyfinItemID, Valid: true},
 	}
 
 	// Add client info
@@ -289,6 +415,11 @@ func (h *PublicHandler) StartPlayback(w http.ResponseWriter, r *http.Request) {
 			userAgent = userAgent[:256]
 		}
 		session.UserAgent = sql.NullString{String: userAgent, Valid: true}
+	}
+
+	if !h.pinTrackSelection(r, session, share.ItemType, share.JellyfinItemID) {
+		writeError(w, http.StatusBadRequest, "requested audio or subtitle track is not available")
+		return
 	}
 
 	if err := h.db.CreateSession(r.Context(), session); err != nil {
@@ -542,7 +673,9 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Create session for the episode
+	// Create session for the episode. The episode was verified against the season
+	// above; pinning it here is what makes that check stick - the stream proxy reads
+	// this instead of an item id supplied by the viewer.
 	sessionToken := middleware.GenerateSecureToken(32)
 	session := &models.ShareSession{
 		ID:              uuid.New(),
@@ -550,9 +683,9 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		SessionToken:    sessionToken,
 		StartedAt:       time.Now(),
 		LastHeartbeatAt: time.Now(),
+		JellyfinItemID:  sql.NullString{String: episodeID, Valid: true},
 	}
 
-	// Store episode ID in session (we'll use client IP hash field for now, or add a note)
 	ipHash := middleware.GetIPHash(r.Context())
 	if ipHash != "" {
 		session.ClientIPHash = sql.NullString{String: ipHash, Valid: true}
@@ -563,6 +696,11 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 			userAgent = userAgent[:256]
 		}
 		session.UserAgent = sql.NullString{String: userAgent, Valid: true}
+	}
+
+	if !h.pinTrackSelection(r, session, "Episode", episodeID) {
+		writeError(w, http.StatusBadRequest, "requested audio or subtitle track is not available")
+		return
 	}
 
 	if err := h.db.CreateSession(r.Context(), session); err != nil {
@@ -582,7 +720,7 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 	})
 
 	// Generate playback URL for the specific episode
-	playbackURL := h.cfg.PublicBaseURL + "/api/public/stream/" + session.ID.String() + "/master.m3u8?itemId=" + episodeID
+	playbackURL := h.cfg.PublicBaseURL + "/api/public/stream/" + session.ID.String() + "/master.m3u8"
 
 	writeJSON(w, http.StatusOK, models.PlayResponse{
 		SessionID:   session.ID,
