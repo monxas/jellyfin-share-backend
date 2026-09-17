@@ -2,10 +2,37 @@ package models
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// NullTime is a nullable timestamp that marshals to a bare JSON timestamp or null,
+// instead of the {"Time":...,"Valid":...} shape sql.NullTime would produce. Clients
+// read this field directly, so the wire format has to stay a plain timestamp.
+type NullTime struct {
+	sql.NullTime
+}
+
+func (n NullTime) MarshalJSON() ([]byte, error) {
+	if !n.Valid {
+		return []byte("null"), nil
+	}
+	return json.Marshal(n.Time)
+}
+
+func (n *NullTime) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		n.Valid = false
+		return nil
+	}
+	if err := json.Unmarshal(b, &n.Time); err != nil {
+		return err
+	}
+	n.Valid = true
+	return nil
+}
 
 type Share struct {
 	ID                       uuid.UUID      `db:"id" json:"id"`
@@ -22,7 +49,8 @@ type Share struct {
 	MaxConcurrentViewers     sql.NullInt64  `db:"max_concurrent_viewers" json:"maxConcurrentViewers,omitempty"`
 	TotalPlays               int            `db:"total_plays" json:"totalPlays"`
 	CurrentConcurrentViewers int            `db:"current_concurrent_viewers" json:"currentConcurrentViewers"`
-	ExpiresAt                time.Time      `db:"expires_at" json:"expiresAt"`
+	// ExpiresAt is NULL for a share that never expires.
+	ExpiresAt                NullTime       `db:"expires_at" json:"expiresAt"`
 	PasswordHash             sql.NullString `db:"password_hash" json:"-"`
 	CreatedAt                time.Time      `db:"created_at" json:"createdAt"`
 	RevokedAt                sql.NullTime   `db:"revoked_at" json:"revokedAt,omitempty"`
@@ -30,7 +58,20 @@ type Share struct {
 }
 
 func (s *Share) IsExpired() bool {
-	return time.Now().After(s.ExpiresAt)
+	if !s.ExpiresAt.Valid {
+		return false // never expires
+	}
+	return time.Now().After(s.ExpiresAt.Time)
+}
+
+// ExpiresAtPtr renders the expiry for JSON: nil (and thus null) when the share
+// never expires, so clients can distinguish "no expiry" from a zero timestamp.
+func (s *Share) ExpiresAtPtr() *time.Time {
+	if !s.ExpiresAt.Valid {
+		return nil
+	}
+	t := s.ExpiresAt.Time
+	return &t
 }
 
 func (s *Share) IsRevoked() bool {
@@ -64,6 +105,8 @@ type CreateShareRequest struct {
 	MaxTotalPlays        *int    `json:"maxTotalPlays,omitempty"`
 	MaxConcurrentViewers *int    `json:"maxConcurrentViewers,omitempty"`
 	ExpiresInMinutes     int     `json:"expiresInMinutes"`
+	// NeverExpires overrides ExpiresInMinutes and stores a NULL expiry.
+	NeverExpires         bool    `json:"neverExpires,omitempty"`
 	Password             *string `json:"password,omitempty"`
 }
 
@@ -71,9 +114,27 @@ type CreateShareResponse struct {
 	ShareID              uuid.UUID `json:"shareId"`
 	PublicURL            string    `json:"publicUrl"`
 	Token                string    `json:"token"`
-	ExpiresAt            time.Time `json:"expiresAt"`
+	ExpiresAt            *time.Time `json:"expiresAt"`
 	MaxTotalPlays        *int      `json:"maxTotalPlays,omitempty"`
 	MaxConcurrentViewers *int      `json:"maxConcurrentViewers,omitempty"`
+}
+
+type AudioTrack struct {
+	Index        int    `json:"index"`
+	Language     string `json:"language,omitempty"`
+	DisplayTitle string `json:"displayTitle,omitempty"`
+	Codec        string `json:"codec,omitempty"`
+	Channels     int    `json:"channels,omitempty"`
+	IsDefault    bool   `json:"isDefault"`
+}
+
+type SubtitleTrack struct {
+	Index        int    `json:"index"`
+	Language     string `json:"language,omitempty"`
+	DisplayTitle string `json:"displayTitle,omitempty"`
+	Codec        string `json:"codec,omitempty"`
+	IsDefault    bool   `json:"isDefault"`
+	IsForced     bool   `json:"isForced"`
 }
 
 type SharePublicInfo struct {
@@ -85,7 +146,7 @@ type SharePublicInfo struct {
 	BackdropURL              string    `json:"backdropUrl,omitempty"`
 	LogoURL                  string    `json:"logoUrl,omitempty"`
 	ItemType                 string    `json:"itemType"`
-	ExpiresAt                time.Time `json:"expiresAt"`
+	ExpiresAt                *time.Time `json:"expiresAt"`
 	RequiresPassword         bool      `json:"requiresPassword"`
 	MaxTotalPlays            *int64    `json:"maxTotalPlays,omitempty"`
 	TotalPlays               int       `json:"totalPlays"`
@@ -102,6 +163,8 @@ type SharePublicInfo struct {
 	Directors       []string          `json:"directors,omitempty"`
 	Actors          []ActorInfo       `json:"actors,omitempty"`
 	VideoQuality    *VideoQualityInfo `json:"videoQuality,omitempty"`
+	AudioTracks     []AudioTrack      `json:"audioTracks,omitempty"`
+	SubtitleTracks  []SubtitleTrack   `json:"subtitleTracks,omitempty"`
 }
 
 type ActorInfo struct {
@@ -123,7 +186,7 @@ func (s *Share) ToPublicInfo(baseURL string) SharePublicInfo {
 	info := SharePublicInfo{
 		Title:                    s.Title,
 		ItemType:                 s.ItemType,
-		ExpiresAt:                s.ExpiresAt,
+		ExpiresAt:                s.ExpiresAtPtr(),
 		RequiresPassword:         s.RequiresPassword(),
 		TotalPlays:               s.TotalPlays,
 		CurrentConcurrentViewers: s.CurrentConcurrentViewers,
@@ -160,10 +223,13 @@ type ShareListItem struct {
 	CurrentConcurrentViewers int        `db:"current_concurrent_viewers" json:"currentConcurrentViewers"`
 	MaxTotalPlays            *int64     `db:"max_total_plays" json:"maxTotalPlays,omitempty"`
 	MaxConcurrentViewers     *int64     `db:"max_concurrent_viewers" json:"maxConcurrentViewers,omitempty"`
-	ExpiresAt                time.Time  `db:"expires_at" json:"expiresAt"`
+	ExpiresAt                *time.Time  `db:"expires_at" json:"expiresAt"`
 	CreatedAt                time.Time  `db:"created_at" json:"createdAt"`
 	RevokedAt                *time.Time `db:"revoked_at" json:"revokedAt,omitempty"`
 	HasPassword              bool       `json:"hasPassword"`
+	// PublicURL is built from PublicBaseURL, not from the caller's view of the
+	// backend, so clients never have to reconstruct it from their own base URL.
+	PublicURL string `json:"publicUrl"`
 }
 
 type UpdateShareRequest struct {

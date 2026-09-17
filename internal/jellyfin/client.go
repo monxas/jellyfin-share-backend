@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -117,13 +116,17 @@ type MediaSource struct {
 
 type MediaStream struct {
 	Type         string `json:"Type"`
+	Index        int    `json:"Index"`
 	Codec        string `json:"Codec,omitempty"`
+	Language     string `json:"Language,omitempty"`
 	Width        int    `json:"Width,omitempty"`
 	Height       int    `json:"Height,omitempty"`
 	BitRate      int    `json:"BitRate,omitempty"`
 	Channels     int    `json:"Channels,omitempty"`
 	SampleRate   int    `json:"SampleRate,omitempty"`
 	DisplayTitle string `json:"DisplayTitle,omitempty"`
+	IsDefault    bool   `json:"IsDefault,omitempty"`
+	IsForced     bool   `json:"IsForced,omitempty"`
 }
 
 type PlaybackInfo struct {
@@ -155,6 +158,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 
 	return c.httpClient.Do(req)
 }
+
 
 func (c *Client) GetItem(ctx context.Context, itemID string) (*ItemInfo, error) {
 	if c.userID == "" {
@@ -218,32 +222,6 @@ func (c *Client) GetThumbURL(itemID string) string {
 	return fmt.Sprintf("%s/Items/%s/Images/Thumb", c.baseURL, itemID)
 }
 
-func (c *Client) GetStreamURL(itemID string, mediaSourceID string, container string) string {
-	params := url.Values{}
-	params.Set("Static", "true")
-	params.Set("mediaSourceId", mediaSourceID)
-	params.Set("api_key", c.apiKey)
-
-	return fmt.Sprintf("%s/Videos/%s/stream.%s?%s", c.baseURL, itemID, container, params.Encode())
-}
-
-func (c *Client) GetHLSStreamURL(itemID string, mediaSourceID string) string {
-	params := url.Values{}
-	params.Set("MediaSourceId", mediaSourceID)
-	params.Set("api_key", c.apiKey)
-	params.Set("DeviceId", "jfshare-backend")
-	params.Set("PlaySessionId", "jfshare-"+itemID)
-
-	return fmt.Sprintf("%s/Videos/%s/master.m3u8?%s", c.baseURL, itemID, params.Encode())
-}
-
-func (c *Client) GetTranscodedStreamURL(transcodingPath string) string {
-	if strings.HasPrefix(transcodingPath, "/") {
-		return c.baseURL + transcodingPath + "&api_key=" + c.apiKey
-	}
-	return c.baseURL + "/" + transcodingPath + "&api_key=" + c.apiKey
-}
-
 func (c *Client) VerifyConnection(ctx context.Context) error {
 	resp, err := c.doRequest(ctx, http.MethodGet, "/System/Info/Public", nil)
 	if err != nil {
@@ -268,10 +246,6 @@ func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
-func (c *Client) APIKey() string {
-	return c.apiKey
-}
-
 // TicksToSeconds converts Jellyfin runtime ticks to seconds
 func TicksToSeconds(ticks int64) int64 {
 	return ticks / 10000000
@@ -286,6 +260,9 @@ type EpisodeInfo struct {
 	RuntimeSeconds    int64  `json:"runtimeSeconds,omitempty"`
 	HasPoster         bool   `json:"hasPoster"`
 	PremiereDate      string `json:"premiereDate,omitempty"`
+	// SeasonNumber is set when the list spans more than one season, so a flattened
+	// Series listing can still tell S01E02 from S02E02.
+	SeasonNumber      int    `json:"seasonNumber,omitempty"`
 }
 
 // GetSeasonEpisodes returns all episodes in a season
@@ -323,6 +300,7 @@ func (c *Client) GetSeasonEpisodes(ctx context.Context, seasonID string) ([]Epis
 			ID:           item.ID,
 			Name:         item.Name,
 			IndexNumber:  item.IndexNumber,
+			SeasonNumber: item.ParentIndexNumber,
 			Overview:     item.Overview,
 			PremiereDate: item.PremiereDate,
 			HasPoster:    item.ImageTags.Primary != "",
