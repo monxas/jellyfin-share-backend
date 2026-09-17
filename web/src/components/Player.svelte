@@ -202,7 +202,18 @@
       playsinline
       autoplay
     >
-      <track kind="captions" />
+      {#if playbackData?.subtitleUrl}
+        <!-- Text subtitles arrive as a sidecar, so the video needed no re-encode
+             and the viewer can switch them off in the player's own menu. -->
+        <track
+          kind="subtitles"
+          label="Subtitles"
+          src={playbackData.subtitleUrl}
+          default
+        />
+      {:else}
+        <track kind="captions" />
+      {/if}
     </video>
   </div>
 

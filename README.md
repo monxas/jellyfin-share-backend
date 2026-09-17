@@ -12,7 +12,14 @@ A secure, self-hosted solution for creating temporary, shareable links to your J
 - **Rich Metadata** - Displays poster, backdrop, ratings, cast, and more
 - **Admin Dashboard** - Web UI to manage and monitor all shares
 - **Session Tracking** - Monitor active viewers and playback sessions
-- **HLS Streaming** - Adaptive bitrate streaming for optimal playback
+- **HLS Streaming** - Segments are served through the backend, never from Jellyfin
+- **Browser-Compatible Playback** - The codec is negotiated with the viewer's browser,
+  so an AV1 or HEVC library plays without being needlessly re-encoded for everyone
+- **Audio and Subtitle Tracks** - Selectable before playback; text subtitles are
+  delivered as a WebVTT sidecar, so the video needs no transcode and the viewer can
+  switch them off
+- **Per-Share Quality** - Cap a single link at 1080p, 720p or 480p without touching
+  the library or the server settings
 
 ## Architecture
 
@@ -81,7 +88,7 @@ Navigate to `http://localhost:8097/admin` and enter your `BACKEND_API_KEY`.
 
 | Environment Variable | Description | Default |
 |---------------------|-------------|---------|
-| `JFSHARE_PORT` | Server port | `8097` |
+| `JFSHARE_PORT` | Server port | `8080` |
 | `JFSHARE_JELLYFIN_BASE_URL` | Jellyfin server URL | Required |
 | `JFSHARE_JELLYFIN_API_KEY` | Jellyfin API key | Required |
 | `JFSHARE_BACKEND_API_KEY` | Admin API key | Required |
@@ -90,6 +97,9 @@ Navigate to `http://localhost:8097/admin` and enter your `BACKEND_API_KEY`.
 | `JFSHARE_SESSION_HEARTBEAT_TIMEOUT_SECONDS` | Session timeout | `120` |
 | `JFSHARE_RATE_LIMIT_REQUESTS` | Rate limit requests | `100` |
 | `JFSHARE_RATE_LIMIT_WINDOW_SECONDS` | Rate limit window | `60` |
+| `JFSHARE_MAX_TRANSCODE_BITRATE` | Upper bound for a transcode target, in bits per second. Only applies when Jellyfin transcodes; direct stream is unaffected | `20000000` |
+| `JFSHARE_STREAM_VIDEO_CODEC` | Fallback video codec, used when the viewer's browser cannot decode the source. A source that already matches is stream-copied, not re-encoded. Empty sends no preference, which lets AV1/HEVC reach the browser untouched | `h264` |
+| `JFSHARE_STREAM_AUDIO_CODEC` | Audio codec the share page can play, same rule | `aac` |
 
 ## API Reference
 
@@ -107,9 +117,12 @@ X-Backend-Key: your-api-key
   "jellyfinItemId": "abc123",
   "jellyfinUserId": "user123",
   "expiresInMinutes": 1440,
+  "neverExpires": false,
   "password": "optional-password",
   "maxTotalPlays": 5,
-  "maxConcurrentViewers": 2
+  "maxConcurrentViewers": 2,
+  "maxVideoHeight": 720,
+  "maxVideoBitrate": 4000000
 }
 ```
 
@@ -131,6 +144,11 @@ POST /api/admin/shares/{id}/revoke
 X-Backend-Key: your-api-key
 ```
 
+Add `?jellyfinUserId=...` to scope the call to one owner: the share is only revoked
+if it belongs to that user, otherwise the call is refused with 403. The plugin uses
+this so one Jellyfin user cannot revoke another user's share. Omitting it keeps full
+admin reach. The same applies to `GET /api/admin/shares/{id}/analytics`.
+
 #### Update Share
 ```http
 PATCH /api/admin/shares/{id}
@@ -141,6 +159,21 @@ X-Backend-Key: your-api-key
   "maxTotalPlays": 10,
   "extendMinutes": 1440
 }
+```
+
+#### Share Analytics
+```http
+GET /api/admin/shares/{id}/analytics
+X-Backend-Key: your-api-key
+```
+
+Returns total views, unique viewers, average watch time and views per day for the
+last 30 days.
+
+#### Server Stats
+```http
+GET /api/admin/stats
+X-Backend-Key: your-api-key
 ```
 
 ### Public Endpoints
@@ -165,6 +198,37 @@ Content-Type: application/json
 POST /api/public/shares/{token}/play
 ```
 
+Optional query parameters, all validated against the item and then pinned to the
+session - the stream proxy never reads them from a later request:
+`videoCodecs` (comma-separated list the browser can decode, e.g. `h264,hevc`),
+`audioStreamIndex`, `subtitleStreamIndex`, and `audioLanguage` / `subtitleLanguage`,
+which take precedence for an episode because the track list was probed on a
+different one.
+
+The response carries `subtitleUrl` when a text subtitle was selected.
+
+#### List Episodes (Season and Series shares)
+```http
+GET /api/public/shares/{token}/episodes
+```
+
+#### Start Episode Playback
+```http
+POST /api/public/shares/{token}/episodes/{episodeId}/play
+```
+
+#### Finish Playback
+```http
+POST /api/public/sessions/{sessionId}/finish
+```
+
+#### Media, Images and Subtitles
+```http
+GET /api/public/stream/{sessionId}/{path}
+GET /api/public/images/{token}/{type}
+GET /api/public/subtitles/{sessionId}/{index}.vtt
+```
+
 #### Heartbeat (keep session alive)
 ```http
 POST /api/public/sessions/{sessionId}/heartbeat
@@ -179,8 +243,8 @@ Content-Type: application/json
 
 ### Prerequisites
 
-- Go 1.21+
-- Node.js 18+
+- Go 1.23+ (see `go.mod`)
+- Node.js 20+ (the production image builds the frontend with `node:20`)
 - Docker and Docker Compose
 
 ### Setup
@@ -205,7 +269,7 @@ docker-compose -f docker-compose.dev.yml up
 │   ├── jellyfin/        # Jellyfin API client
 │   ├── middleware/      # Auth, rate limiting, sessions
 │   ├── models/          # Data models
-│   └── proxy/           # Stream & image proxy
+│   └── proxy/           # Stream, image & subtitle proxy
 ├── migrations/          # SQL migrations
 ├── web/
 │   └── src/
@@ -231,6 +295,11 @@ cd web && npm run build
 - **Rate limiting** - Public endpoints are rate-limited to prevent abuse
 - **IP hashing** - Client IPs are hashed for privacy in audit logs
 - **Automatic session cleanup** - Stale sessions are automatically terminated
+- **Credentials stay server-side** - The Jellyfin key travels as a request header, never
+  in a URL that could be echoed back into a manifest the viewer receives
+- **Playback is pinned to the session** - The item, media source, codec, bitrate and
+  track selection are resolved once when playback starts. The proxy never takes them
+  from a request, so a share link cannot be pointed at another item
 
 ## Companion Plugin
 

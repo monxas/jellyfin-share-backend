@@ -116,6 +116,9 @@ func main() {
 		// Image proxy
 		r.Get("/images/{token}/{type}", streamProxy.ServeImage)
 
+		// WebVTT sidecar for text subtitles
+		r.Get("/subtitles/{sessionId}/{index}", streamProxy.ServeSubtitle)
+
 		// Stream proxy (no rate limit for streaming)
 		r.Get("/stream/{sessionId}/*", streamProxy.ServeStream)
 	})

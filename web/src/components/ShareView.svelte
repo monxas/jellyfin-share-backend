@@ -76,6 +76,7 @@
   }
 
   function formatExpiry(expiresAt) {
+    if (!expiresAt) return null; // never expires
     const expiry = new Date(expiresAt);
     const now = new Date();
     const diff = expiry - now;
@@ -129,10 +130,55 @@
     }
   }
 
+  let selectedAudioIndex = null;
+  let selectedSubtitleIndex = null;
+
+  function trackLabel(t, fallback) {
+    return t.displayTitle || t.language || `${fallback} ${t.index}`;
+  }
+
+  // Report what this browser can actually decode so the server can stream-copy a
+  // matching source instead of re-encoding it. AV1 is never claimed: segments are
+  // mpegts here, and AV1 in mpegts does not decode even where AV1 itself does.
+  function supportedVideoCodecs() {
+    const codecs = ['h264']; // baseline; every target browser decodes it
+    try {
+      const el = document.createElement('video');
+      const supports = (type) =>
+        (el.canPlayType && el.canPlayType(type) !== '') ||
+        (window.MediaSource && MediaSource.isTypeSupported(type));
+      if (supports('video/mp4; codecs="hvc1.1.6.L93.B0"') ||
+          supports('video/mp4; codecs="hev1.1.6.L93.B0"')) {
+        codecs.push('hevc');
+      }
+    } catch (e) {
+      // Probing failed - h264 alone is always a safe answer
+    }
+    return codecs;
+  }
+
+  // The server validates and pins these; sending them is a request, not a command.
+  function trackQuery() {
+    const p = ['videoCodecs=' + supportedVideoCodecs().join(',')];
+    if (selectedAudioIndex != null) {
+      p.push('audioStreamIndex=' + selectedAudioIndex);
+      // Send the language too: for a season or series the list was probed on one
+      // episode, and stream N elsewhere is often a different language.
+      const t = (shareInfo.audioTracks || []).find((x) => x.index === selectedAudioIndex);
+      if (t?.language) p.push('audioLanguage=' + encodeURIComponent(t.language));
+    }
+    if (selectedSubtitleIndex != null) {
+      p.push('subtitleStreamIndex=' + selectedSubtitleIndex);
+      const t = (shareInfo.subtitleTracks || []).find((x) => x.index === selectedSubtitleIndex);
+      if (t?.language) p.push('subtitleLanguage=' + encodeURIComponent(t.language));
+    }
+    return '?' + p.join('&');
+  }
+
   async function startPlayback() {
     playError = '';
     try {
-      const response = await fetch(`/api/public/shares/${token}/play`, {
+      const response = await fetch(`/api/public/shares/${token}/play${trackQuery()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include'
@@ -153,7 +199,7 @@
   async function startEpisodePlayback(episode) {
     playError = '';
     try {
-      const response = await fetch(`/api/public/shares/${token}/episodes/${episode.id}/play`, {
+      const response = await fetch(`/api/public/shares/${token}/episodes/${episode.id}/play${trackQuery()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include'
@@ -365,8 +411,39 @@
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6z"/>
             </svg>
-            <span>Expires in {formatExpiry(shareInfo.expiresAt)}</span>
+            {#if shareInfo.expiresAt}
+              <span>Expires in {formatExpiry(shareInfo.expiresAt)}</span>
+            {:else}
+              <span>Never expires</span>
+            {/if}
           </div>
+
+          {#if (shareInfo.audioTracks && shareInfo.audioTracks.length > 1) || (shareInfo.subtitleTracks && shareInfo.subtitleTracks.length > 0)}
+            <div class="track-selectors">
+              {#if shareInfo.audioTracks && shareInfo.audioTracks.length > 1}
+                <div class="track-selector">
+                  <label for="audio-select">Audio</label>
+                  <select id="audio-select" bind:value={selectedAudioIndex}>
+                    <option value={null}>Default</option>
+                    {#each shareInfo.audioTracks as track}
+                      <option value={track.index}>{trackLabel(track, 'Track')}</option>
+                    {/each}
+                  </select>
+                </div>
+              {/if}
+              {#if shareInfo.subtitleTracks && shareInfo.subtitleTracks.length > 0}
+                <div class="track-selector">
+                  <label for="subtitle-select">Subtitles</label>
+                  <select id="subtitle-select" bind:value={selectedSubtitleIndex}>
+                    <option value={null}>None</option>
+                    {#each shareInfo.subtitleTracks as track}
+                      <option value={track.index}>{trackLabel(track, 'Subtitle')}</option>
+                    {/each}
+                  </select>
+                </div>
+              {/if}
+            </div>
+          {/if}
 
           <!-- Password or Play Button -->
           {#if showPasswordForm}
@@ -404,7 +481,7 @@
               <!-- Episode List for Season/Series -->
               <div class="episodes-section">
                 <h3 class="episodes-header">
-                  {shareInfo.itemType === 'Season' ? 'Episodes' : 'Seasons'}
+                  Episodes
                   {#if episodes.length > 0}
                     <span class="episodes-count">({episodes.length})</span>
                   {/if}
@@ -413,18 +490,22 @@
                 {#if episodesLoading}
                   <div class="episodes-loading">
                     <div class="loading-spinner"></div>
-                    <span>Loading {shareInfo.itemType === 'Season' ? 'episodes' : 'seasons'}...</span>
+                    <span>Loading episodes...</span>
                   </div>
                 {:else if episodesError}
                   <p class="error-msg">{episodesError}</p>
                 {:else if episodes.length === 0}
-                  <p class="episodes-empty">No {shareInfo.itemType === 'Season' ? 'episodes' : 'seasons'} found</p>
+                  <p class="episodes-empty">No episodes found</p>
                 {:else}
                   <div class="episodes-list">
                     {#each episodes as episode}
                       <button class="episode-card" on:click={() => startEpisodePlayback(episode)}>
                         <div class="episode-number">
-                          {episode.indexNumber || '?'}
+                          {#if episode.seasonNumber}
+                            S{episode.seasonNumber}E{episode.indexNumber || '?'}
+                          {:else}
+                            {episode.indexNumber || '?'}
+                          {/if}
                         </div>
                         <div class="episode-info">
                           <div class="episode-title">{episode.name}</div>
@@ -843,6 +924,32 @@
 
   .plays-fill.low {
     background: linear-gradient(90deg, #ff6b6b, #ff4757);
+  }
+
+  .track-selectors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+  .track-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 10rem;
+    flex: 1 1 10rem;
+  }
+  .track-selector label {
+    font-size: 0.8rem;
+    opacity: 0.7;
+  }
+  .track-selector select {
+    padding: 0.5rem;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(0, 0, 0, 0.4);
+    color: inherit;
+    font-size: 0.9rem;
   }
 
   .expiry-info {
