@@ -48,6 +48,13 @@ func (h *AdminHandler) CreateShare(w http.ResponseWriter, r *http.Request) {
 		req.ExpiresInMinutes = 1440 // Default 24 hours
 	}
 
+	// NeverExpires stores a NULL expiry; ExpiresInMinutes is ignored in that case.
+	expiresAt := models.NullTime{}
+	if !req.NeverExpires {
+		expiresAt.Time = time.Now().Add(time.Duration(req.ExpiresInMinutes) * time.Minute)
+		expiresAt.Valid = true
+	}
+
 	// Fetch item info from Jellyfin
 	item, err := h.jf.GetItem(r.Context(), req.JellyfinItemID)
 	if err != nil {
@@ -66,7 +73,7 @@ func (h *AdminHandler) CreateShare(w http.ResponseWriter, r *http.Request) {
 		JellyfinUserID: req.JellyfinUserID,
 		Title:          item.Name,
 		ItemType:       item.Type,
-		ExpiresAt:      time.Now().Add(time.Duration(req.ExpiresInMinutes) * time.Minute),
+		ExpiresAt:      expiresAt,
 		CreatedAt:      time.Now(),
 	}
 
@@ -91,6 +98,13 @@ func (h *AdminHandler) CreateShare(w http.ResponseWriter, r *http.Request) {
 			share.Title += " - " + item.SeasonName
 		}
 		share.Title += " - " + item.Name
+	}
+
+	if req.MaxVideoHeight != nil && *req.MaxVideoHeight > 0 {
+		share.MaxVideoHeight = sql.NullInt64{Int64: int64(*req.MaxVideoHeight), Valid: true}
+	}
+	if req.MaxVideoBitrate != nil && *req.MaxVideoBitrate > 0 {
+		share.MaxVideoBitrate = sql.NullInt64{Int64: int64(*req.MaxVideoBitrate), Valid: true}
 	}
 
 	if req.MaxTotalPlays != nil {
@@ -125,7 +139,7 @@ func (h *AdminHandler) CreateShare(w http.ResponseWriter, r *http.Request) {
 		ShareID:   share.ID,
 		PublicURL: h.cfg.PublicBaseURL + "/s/" + publicToken,
 		Token:     publicToken,
-		ExpiresAt: share.ExpiresAt,
+		ExpiresAt: share.ExpiresAtPtr(),
 	}
 	if req.MaxTotalPlays != nil {
 		resp.MaxTotalPlays = req.MaxTotalPlays
@@ -165,9 +179,10 @@ func (h *AdminHandler) ListShares(w http.ResponseWriter, r *http.Request) {
 			ItemType:                 s.ItemType,
 			TotalPlays:               s.TotalPlays,
 			CurrentConcurrentViewers: s.CurrentConcurrentViewers,
-			ExpiresAt:                s.ExpiresAt,
+			ExpiresAt:                s.ExpiresAtPtr(),
 			CreatedAt:                s.CreatedAt,
 			HasPassword:              s.RequiresPassword(),
+			PublicURL:                h.cfg.PublicBaseURL + "/s/" + s.PublicToken,
 		}
 		if s.MaxTotalPlays.Valid {
 			item.MaxTotalPlays = &s.MaxTotalPlays.Int64
@@ -177,6 +192,9 @@ func (h *AdminHandler) ListShares(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.RevokedAt.Valid {
 			item.RevokedAt = &s.RevokedAt.Time
+		}
+		if s.MaxVideoHeight.Valid {
+			item.MaxVideoHeight = &s.MaxVideoHeight.Int64
 		}
 		items = append(items, item)
 	}

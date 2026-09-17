@@ -28,6 +28,26 @@ type ShareSession struct {
 	FinishedAt        sql.NullTime      `db:"finished_at" json:"finishedAt,omitempty"`
 	TerminatedReason  sql.NullString    `db:"terminated_reason" json:"terminatedReason,omitempty"`
 	LastPositionSecs  sql.NullInt64     `db:"last_position_secs" json:"lastPositionSecs,omitempty"`
+	// JellyfinItemID pins what this session may stream. The stream proxy uses it
+	// instead of trusting an item id from the viewer's query string.
+	JellyfinItemID    sql.NullString    `db:"jellyfin_item_id" json:"-"`
+	// Audio/subtitle selection, validated once at play time and pinned here for the
+	// same reason as JellyfinItemID: the proxy must not read it from the request.
+	AudioStreamIndex    sql.NullInt64 `db:"audio_stream_index" json:"-"`
+	SubtitleStreamIndex sql.NullInt64 `db:"subtitle_stream_index" json:"-"`
+	// VideoBitrate is the transcode target derived from the source at play time.
+	VideoBitrate        sql.NullInt64 `db:"video_bitrate" json:"-"`
+	// VideoCodec is the outcome of negotiating with the viewer's browser. Empty
+	// falls back to the configured default.
+	VideoCodec          sql.NullString `db:"video_codec" json:"-"`
+	// VTTSubtitleIndex is a text subtitle delivered as a sidecar rather than burned
+	// into the picture. SubtitleStreamIndex stays reserved for burn-in.
+	VTTSubtitleIndex    sql.NullInt64  `db:"vtt_subtitle_index" json:"-"`
+	// MediaSourceID is the source the stream and subtitle indices belong to. Equal
+	// to the item id for a single-version item, distinct for alternate versions.
+	MediaSourceID       sql.NullString `db:"media_source_id" json:"-"`
+	// MaxVideoHeight is the share's quality ceiling, resolved at play time.
+	MaxVideoHeight      sql.NullInt64  `db:"max_video_height" json:"-"`
 }
 
 func (s *ShareSession) IsActive(heartbeatTimeout time.Duration) bool {
@@ -44,6 +64,9 @@ type PlayRequest struct {
 type PlayResponse struct {
 	SessionID   uuid.UUID `json:"sessionId"`
 	PlaybackURL string    `json:"playbackUrl"`
+	// SubtitleURL is set when a text subtitle is delivered alongside the video
+	// instead of being rendered into it.
+	SubtitleURL string    `json:"subtitleUrl,omitempty"`
 }
 
 type HeartbeatRequest struct {

@@ -15,9 +15,10 @@ func (db *DB) CreateShare(ctx context.Context, share *models.Share) error {
 		INSERT INTO shares (
 			id, public_token, jellyfin_item_id, jellyfin_user_id, title, overview,
 			runtime_seconds, poster_path, backdrop_path, item_type, max_total_plays,
-			max_concurrent_viewers, expires_at, password_hash, created_at
+			max_concurrent_viewers, expires_at, password_hash, created_at,
+			max_video_height, max_video_bitrate
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 		)`
 
 	_, err := db.ExecContext(ctx, query,
@@ -25,6 +26,7 @@ func (db *DB) CreateShare(ctx context.Context, share *models.Share) error {
 		share.Title, share.Overview, share.RuntimeSeconds, share.PosterPath,
 		share.BackdropPath, share.ItemType, share.MaxTotalPlays, share.MaxConcurrentViewers,
 		share.ExpiresAt, share.PasswordHash, share.CreatedAt,
+		share.MaxVideoHeight, share.MaxVideoBitrate,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create share: %w", err)
@@ -115,6 +117,8 @@ func (db *DB) UpdateShare(ctx context.Context, id uuid.UUID, maxTotalPlays, maxC
 	}
 
 	if extendMinutes != nil {
+		// A NULL expiry stays NULL: extending a share that never expires is a no-op
+		// rather than silently giving it a deadline.
 		updates = append(updates, fmt.Sprintf("expires_at = expires_at + INTERVAL '%d minutes'", *extendMinutes))
 	}
 
@@ -185,14 +189,14 @@ func (db *DB) UpdateLastActivity(ctx context.Context, shareID uuid.UUID) error {
 
 func (db *DB) GetActiveSharesCount(ctx context.Context) (int, error) {
 	var count int
-	query := `SELECT COUNT(*) FROM shares WHERE revoked_at IS NULL AND expires_at > NOW()`
+	query := `SELECT COUNT(*) FROM shares WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())`
 	err := db.GetContext(ctx, &count, query)
 	return count, err
 }
 
 func (db *DB) CleanupExpiredShares(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
-	query := `DELETE FROM shares WHERE expires_at < $1 AND revoked_at IS NOT NULL`
+	query := `DELETE FROM shares WHERE expires_at IS NOT NULL AND expires_at < $1 AND revoked_at IS NOT NULL`
 	result, err := db.ExecContext(ctx, query, cutoff)
 	if err != nil {
 		return 0, err
