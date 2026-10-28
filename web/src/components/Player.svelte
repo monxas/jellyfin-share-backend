@@ -33,7 +33,17 @@
       return;
     }
 
-    if (Hls.isSupported()) {
+    const isApple = videoElement.canPlayType('application/vnd.apple.mpegurl') &&
+      (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
+    if (isApple) {
+      videoElement.src = playbackData.playbackUrl;
+      videoElement.addEventListener('loadedmetadata', () => {
+        videoElement.play().catch(e => {
+          console.log('Autoplay prevented:', e);
+        });
+      });
+    } else if (Hls.isSupported()) {
       hls = new Hls({
         enableWorker: true,
         lowLatencyMode: false,
