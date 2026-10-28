@@ -108,12 +108,9 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string) string 
 	// Handle different path types
 	if strings.HasSuffix(path, ".m3u8") {
 		// HLS manifest
-		if path == "master.m3u8" {
-			params.Set("MediaSourceId", itemID)
-			params.Set("DeviceId", "jfshare-backend")
-			return baseURL + "/Videos/" + itemID + "/master.m3u8?" + params.Encode()
-		}
-		// Sub-playlist
+		params.Set("MediaSourceId", itemID)
+		params.Set("DeviceId", "jfshare-backend")
+		params.Del("AllowVideoStreamCopy")
 		return baseURL + "/Videos/" + itemID + "/" + path + "?" + params.Encode()
 	}
 
@@ -121,6 +118,7 @@ func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string) string 
 		// Segment file - remove AudioCodec param as it can confuse FFmpeg
 		// (AudioCodec=m3u8 from manifest URLs is not a valid codec)
 		params.Del("AudioCodec")
+		params.Del("AllowVideoStreamCopy")
 		return baseURL + "/Videos/" + itemID + "/" + path + "?" + params.Encode()
 	}
 
