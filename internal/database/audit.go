@@ -117,8 +117,8 @@ func (db *DB) GetShareAnalytics(ctx context.Context, shareID uuid.UUID) (*ShareA
 	// Get average watch time from sessions
 	var avgWatchTime float64
 	err = db.GetContext(ctx, &avgWatchTime, `
-		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - started_at))), 0)
-		FROM sessions WHERE share_id = $1
+		SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (COALESCE(finished_at, NOW()) - started_at))), 0)
+		FROM share_sessions WHERE share_id = $1
 	`, shareID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get avg watch time: %w", err)
