@@ -48,6 +48,13 @@ func (h *AdminHandler) CreateShare(w http.ResponseWriter, r *http.Request) {
 		req.ExpiresInMinutes = 1440 // Default 24 hours
 	}
 
+	// NeverExpires stores a NULL expiry; ExpiresInMinutes is ignored in that case.
+	expiresAt := models.NullTime{}
+	if !req.NeverExpires {
+		expiresAt.Time = time.Now().Add(time.Duration(req.ExpiresInMinutes) * time.Minute)
+		expiresAt.Valid = true
+	}
+
 	// Fetch item info from Jellyfin
 	item, err := h.jf.GetItem(r.Context(), req.JellyfinItemID)
 	if err != nil {
@@ -66,7 +73,7 @@ func (h *AdminHandler) CreateShare(w http.ResponseWriter, r *http.Request) {
 		JellyfinUserID: req.JellyfinUserID,
 		Title:          item.Name,
 		ItemType:       item.Type,
-		ExpiresAt:      time.Now().Add(time.Duration(req.ExpiresInMinutes) * time.Minute),
+		ExpiresAt:      expiresAt,
 		CreatedAt:      time.Now(),
 	}
 
@@ -125,7 +132,7 @@ func (h *AdminHandler) CreateShare(w http.ResponseWriter, r *http.Request) {
 		ShareID:   share.ID,
 		PublicURL: h.cfg.PublicBaseURL + "/s/" + publicToken,
 		Token:     publicToken,
-		ExpiresAt: share.ExpiresAt,
+		ExpiresAt: share.ExpiresAtPtr(),
 	}
 	if req.MaxTotalPlays != nil {
 		resp.MaxTotalPlays = req.MaxTotalPlays
@@ -165,9 +172,10 @@ func (h *AdminHandler) ListShares(w http.ResponseWriter, r *http.Request) {
 			ItemType:                 s.ItemType,
 			TotalPlays:               s.TotalPlays,
 			CurrentConcurrentViewers: s.CurrentConcurrentViewers,
-			ExpiresAt:                s.ExpiresAt,
+			ExpiresAt:                s.ExpiresAtPtr(),
 			CreatedAt:                s.CreatedAt,
 			HasPassword:              s.RequiresPassword(),
+			PublicURL:                h.cfg.PublicBaseURL + "/s/" + s.PublicToken,
 		}
 		if s.MaxTotalPlays.Valid {
 			item.MaxTotalPlays = &s.MaxTotalPlays.Int64
@@ -185,6 +193,22 @@ func (h *AdminHandler) ListShares(w http.ResponseWriter, r *http.Request) {
 		"shares": items,
 		"total":  len(items),
 	})
+}
+
+// ownedBy reports whether the request may act on this share. Without a
+// jellyfinUserId parameter the caller is unscoped and may act on anything, which
+// is what the admin dashboard does.
+func (h *AdminHandler) ownedBy(r *http.Request, id uuid.UUID) bool {
+	owner := r.URL.Query().Get("jellyfinUserId")
+	if owner == "" {
+		return true
+	}
+	share, err := h.db.GetShareByID(r.Context(), id)
+	if err != nil {
+		log.Printf("Failed to load share for ownership check: %v", err)
+		return false
+	}
+	return share != nil && share.JellyfinUserID == owner
 }
 
 func (h *AdminHandler) GetShare(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +244,14 @@ func (h *AdminHandler) RevokeShare(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid share ID")
+		return
+	}
+
+	// A caller may scope the action to an owner. The plugin does this so one
+	// Jellyfin user cannot revoke another user's share by its id; a caller holding
+	// the backend key and omitting it keeps full admin reach.
+	if !h.ownedBy(r, id) {
+		writeError(w, http.StatusForbidden, "share belongs to another user")
 		return
 	}
 
@@ -289,6 +321,11 @@ func (h *AdminHandler) GetShareAnalytics(w http.ResponseWriter, r *http.Request)
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid share ID")
+		return
+	}
+
+	if !h.ownedBy(r, id) {
+		writeError(w, http.StatusForbidden, "share belongs to another user")
 		return
 	}
 

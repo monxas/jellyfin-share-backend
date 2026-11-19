@@ -13,13 +13,15 @@ import (
 func (db *DB) CreateSession(ctx context.Context, session *models.ShareSession) error {
 	query := `
 		INSERT INTO share_sessions (
-			id, share_id, session_token, client_ip_hash, user_agent, started_at, last_heartbeat_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)`
+			id, share_id, session_token, client_ip_hash, user_agent, started_at, last_heartbeat_at,
+			jellyfin_item_id, audio_stream_index, subtitle_stream_index
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 
 	_, err := db.ExecContext(ctx, query,
 		session.ID, session.ShareID, session.SessionToken,
 		session.ClientIPHash, session.UserAgent,
 		session.StartedAt, session.LastHeartbeatAt,
+		session.JellyfinItemID, session.AudioStreamIndex, session.SubtitleStreamIndex,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create session: %w", err)

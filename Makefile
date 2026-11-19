@@ -29,7 +29,7 @@ dev-up:
 	docker-compose -f docker-compose.dev.yml up -d
 	@echo ""
 	@echo "Development environment starting..."
-	@echo "  Backend:  http://localhost:8080"
+	@echo "  Backend:  http://localhost:8097"
 	@echo "  Frontend: http://localhost:5173"
 	@echo "  pgAdmin:  http://localhost:5050 (run with: make dev-pgadmin)"
 	@echo ""
@@ -64,7 +64,7 @@ prod-up:
 	fi
 	docker-compose up -d --build
 	@echo ""
-	@echo "Production environment running at http://localhost:8080"
+	@echo "Production environment running at http://localhost:8097"
 
 prod-down:
 	docker-compose down

@@ -17,9 +17,19 @@
     initPlayer();
     startHeartbeat();
     document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+
+    // iOS Safari fires fullscreen events directly on the video element
+    const onBegin = () => { isFullscreen = true; };
+    const onEnd = () => { isFullscreen = false; };
+    videoElement?.addEventListener('webkitbeginfullscreen', onBegin);
+    videoElement?.addEventListener('webkitendfullscreen', onEnd);
 
     return () => {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      videoElement?.removeEventListener('webkitbeginfullscreen', onBegin);
+      videoElement?.removeEventListener('webkitendfullscreen', onEnd);
     };
   });
 
@@ -137,15 +147,38 @@
   }
 
   function toggleFullscreen() {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen();
-    } else {
-      document.exitFullscreen();
+    const container = document.querySelector('.player-container') || document.documentElement;
+
+    // Standard HTML5 Fullscreen API (Desktop, Android, iPadOS)
+    if (container.requestFullscreen) {
+      if (!document.fullscreenElement) {
+        container.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+      return;
+    }
+
+    // WebKit prefix for older Safari/browsers
+    if (container.webkitRequestFullscreen) {
+      if (!document.webkitFullscreenElement) {
+        container.webkitRequestFullscreen();
+      } else {
+        document.webkitExitFullscreen();
+      }
+      return;
+    }
+
+    // iOS Safari on iPhone does not support DOM element fullscreen;
+    // only the <video> element itself can enter native fullscreen.
+    if (videoElement?.webkitEnterFullscreen) {
+      videoElement.webkitEnterFullscreen();
+      return;
     }
   }
 
   function handleFullscreenChange() {
-    isFullscreen = !!document.fullscreenElement;
+    isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
   }
 
   function handleKeydown(event) {
