@@ -83,11 +83,12 @@
 
   function getStatus(share) {
     if (share.revokedAt) return 'revoked';
-    if (new Date(share.expiresAt) < new Date()) return 'expired';
+    if (share.expiresAt && new Date(share.expiresAt) < new Date()) return 'expired';
     return 'active';
   }
 
   function formatDate(dateStr) {
+    if (!dateStr) return 'Never';
     return new Date(dateStr).toLocaleString();
   }
 
@@ -106,6 +107,7 @@
   }
 
   function formatExpiry(dateStr) {
+    if (!dateStr) return 'Never';
     const date = new Date(dateStr);
     const now = new Date();
     const diff = date - now;

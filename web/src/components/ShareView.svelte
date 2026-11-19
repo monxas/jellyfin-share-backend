@@ -76,6 +76,7 @@
   }
 
   function formatExpiry(expiresAt) {
+    if (!expiresAt) return null; // never expires
     const expiry = new Date(expiresAt);
     const now = new Date();
     const diff = expiry - now;
@@ -129,10 +130,25 @@
     }
   }
 
+  let selectedAudioIndex = null;
+  let selectedSubtitleIndex = null;
+
+  function trackLabel(t, fallback) {
+    return t.displayTitle || t.language || `${fallback} ${t.index}`;
+  }
+
+  // The server validates and pins these; sending them is a request, not a command.
+  function trackQuery() {
+    const p = [];
+    if (selectedAudioIndex != null) p.push('audioStreamIndex=' + selectedAudioIndex);
+    if (selectedSubtitleIndex != null) p.push('subtitleStreamIndex=' + selectedSubtitleIndex);
+    return p.length ? '?' + p.join('&') : '';
+  }
+
   async function startPlayback() {
     playError = '';
     try {
-      const response = await fetch(`/api/public/shares/${token}/play`, {
+      const response = await fetch(`/api/public/shares/${token}/play${trackQuery()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include'
@@ -153,7 +169,7 @@
   async function startEpisodePlayback(episode) {
     playError = '';
     try {
-      const response = await fetch(`/api/public/shares/${token}/episodes/${episode.id}/play`, {
+      const response = await fetch(`/api/public/shares/${token}/episodes/${episode.id}/play${trackQuery()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include'
@@ -365,8 +381,39 @@
             <svg viewBox="0 0 24 24" fill="currentColor">
               <path d="M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6z"/>
             </svg>
-            <span>Expires in {formatExpiry(shareInfo.expiresAt)}</span>
+            {#if shareInfo.expiresAt}
+              <span>Expires in {formatExpiry(shareInfo.expiresAt)}</span>
+            {:else}
+              <span>Never expires</span>
+            {/if}
           </div>
+
+          {#if (shareInfo.audioTracks && shareInfo.audioTracks.length > 1) || (shareInfo.subtitleTracks && shareInfo.subtitleTracks.length > 0)}
+            <div class="track-selectors">
+              {#if shareInfo.audioTracks && shareInfo.audioTracks.length > 1}
+                <div class="track-selector">
+                  <label for="audio-select">Audio</label>
+                  <select id="audio-select" bind:value={selectedAudioIndex}>
+                    <option value={null}>Default</option>
+                    {#each shareInfo.audioTracks as track}
+                      <option value={track.index}>{trackLabel(track, 'Track')}</option>
+                    {/each}
+                  </select>
+                </div>
+              {/if}
+              {#if shareInfo.subtitleTracks && shareInfo.subtitleTracks.length > 0}
+                <div class="track-selector">
+                  <label for="subtitle-select">Subtitles</label>
+                  <select id="subtitle-select" bind:value={selectedSubtitleIndex}>
+                    <option value={null}>None</option>
+                    {#each shareInfo.subtitleTracks as track}
+                      <option value={track.index}>{trackLabel(track, 'Subtitle')}</option>
+                    {/each}
+                  </select>
+                </div>
+              {/if}
+            </div>
+          {/if}
 
           <!-- Password or Play Button -->
           {#if showPasswordForm}
@@ -843,6 +890,32 @@
 
   .plays-fill.low {
     background: linear-gradient(90deg, #ff6b6b, #ff4757);
+  }
+
+  .track-selectors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+  .track-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 10rem;
+    flex: 1 1 10rem;
+  }
+  .track-selector label {
+    font-size: 0.8rem;
+    opacity: 0.7;
+  }
+  .track-selector select {
+    padding: 0.5rem;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(0, 0, 0, 0.4);
+    color: inherit;
+    font-size: 0.9rem;
   }
 
   .expiry-info {
