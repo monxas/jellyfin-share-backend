@@ -460,18 +460,22 @@
                 {#if episodesLoading}
                   <div class="episodes-loading">
                     <div class="loading-spinner"></div>
-                    <span>Loading {shareInfo.itemType === 'Season' ? 'episodes' : 'seasons'}...</span>
+                    <span>Loading episodes...</span>
                   </div>
                 {:else if episodesError}
                   <p class="error-msg">{episodesError}</p>
                 {:else if episodes.length === 0}
-                  <p class="episodes-empty">No {shareInfo.itemType === 'Season' ? 'episodes' : 'seasons'} found</p>
+                  <p class="episodes-empty">No episodes found</p>
                 {:else}
                   <div class="episodes-list">
                     {#each episodes as episode}
                       <button class="episode-card" on:click={() => startEpisodePlayback(episode)}>
                         <div class="episode-number">
-                          {episode.indexNumber || '?'}
+                          {#if episode.seasonNumber}
+                            S{episode.seasonNumber}E{episode.indexNumber || '?'}
+                          {:else}
+                            {episode.indexNumber || '?'}
+                          {/if}
                         </div>
                         <div class="episode-info">
                           <div class="episode-title">{episode.name}</div>

@@ -538,7 +538,35 @@ func (h *PublicHandler) FinishPlayback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "finished"})
 }
 
-// GetShareEpisodes returns episodes for a Season share
+// episodesForShare returns the episodes a share actually grants access to. A Season
+// share yields its own episodes; a Series share yields every episode of every season,
+// flattened, so the list is playable rather than a list of seasons that cannot be
+// started. This is the single source of truth for both listing and play validation.
+func (h *PublicHandler) episodesForShare(ctx context.Context, share *models.Share) ([]jellyfin.EpisodeInfo, error) {
+	switch share.ItemType {
+	case "Season":
+		return h.jf.GetSeasonEpisodes(ctx, share.JellyfinItemID)
+	case "Series":
+		seasons, err := h.jf.GetSeriesSeasons(ctx, share.JellyfinItemID)
+		if err != nil {
+			return nil, err
+		}
+		var all []jellyfin.EpisodeInfo
+		for _, season := range seasons {
+			eps, err := h.jf.GetSeasonEpisodes(ctx, season.ID)
+			if err != nil {
+				log.Printf("Failed to get episodes of season %s: %v", season.ID, err)
+				continue
+			}
+			all = append(all, eps...)
+		}
+		return all, nil
+	default:
+		return nil, nil
+	}
+}
+
+// GetShareEpisodes returns episodes for a Season or Series share
 func (h *PublicHandler) GetShareEpisodes(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
 
@@ -565,14 +593,7 @@ func (h *PublicHandler) GetShareEpisodes(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var episodes []jellyfin.EpisodeInfo
-
-	if share.ItemType == "Season" {
-		episodes, err = h.jf.GetSeasonEpisodes(r.Context(), share.JellyfinItemID)
-	} else {
-		episodes, err = h.jf.GetSeriesSeasons(r.Context(), share.JellyfinItemID)
-	}
-
+	episodes, err := h.episodesForShare(r.Context(), share)
 	if err != nil {
 		log.Printf("Failed to get episodes: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to get episodes")
@@ -623,14 +644,14 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Verify this is a Season share
-	if share.ItemType != "Season" {
-		writeError(w, http.StatusBadRequest, "episode playback only available for season shares")
+	// Only shares that contain episodes can play one
+	if share.ItemType != "Season" && share.ItemType != "Series" {
+		writeError(w, http.StatusBadRequest, "this share does not contain episodes")
 		return
 	}
 
-	// Verify the episode belongs to this season
-	episodes, err := h.jf.GetSeasonEpisodes(r.Context(), share.JellyfinItemID)
+	// Verify the episode is one this share actually grants
+	episodes, err := h.episodesForShare(r.Context(), share)
 	if err != nil {
 		log.Printf("Failed to get episodes: %v", err)
 		writeError(w, http.StatusInternalServerError, "failed to verify episode")
@@ -646,7 +667,7 @@ func (h *PublicHandler) StartEpisodePlayback(w http.ResponseWriter, r *http.Requ
 	}
 
 	if !episodeValid {
-		writeError(w, http.StatusForbidden, "episode not part of this season")
+		writeError(w, http.StatusForbidden, "episode not part of this share")
 		return
 	}
 

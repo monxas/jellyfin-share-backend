@@ -260,6 +260,9 @@ type EpisodeInfo struct {
 	RuntimeSeconds    int64  `json:"runtimeSeconds,omitempty"`
 	HasPoster         bool   `json:"hasPoster"`
 	PremiereDate      string `json:"premiereDate,omitempty"`
+	// SeasonNumber is set when the list spans more than one season, so a flattened
+	// Series listing can still tell S01E02 from S02E02.
+	SeasonNumber      int    `json:"seasonNumber,omitempty"`
 }
 
 // GetSeasonEpisodes returns all episodes in a season
@@ -297,6 +300,7 @@ func (c *Client) GetSeasonEpisodes(ctx context.Context, seasonID string) ([]Epis
 			ID:           item.ID,
 			Name:         item.Name,
 			IndexNumber:  item.IndexNumber,
+			SeasonNumber: item.ParentIndexNumber,
 			Overview:     item.Overview,
 			PremiereDate: item.PremiereDate,
 			HasPoster:    item.ImageTags.Primary != "",
