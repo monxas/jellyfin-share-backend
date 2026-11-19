@@ -187,6 +187,22 @@ func (h *AdminHandler) ListShares(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ownedBy reports whether the request may act on this share. Without a
+// jellyfinUserId parameter the caller is unscoped and may act on anything, which
+// is what the admin dashboard does.
+func (h *AdminHandler) ownedBy(r *http.Request, id uuid.UUID) bool {
+	owner := r.URL.Query().Get("jellyfinUserId")
+	if owner == "" {
+		return true
+	}
+	share, err := h.db.GetShareByID(r.Context(), id)
+	if err != nil {
+		log.Printf("Failed to load share for ownership check: %v", err)
+		return false
+	}
+	return share != nil && share.JellyfinUserID == owner
+}
+
 func (h *AdminHandler) GetShare(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
@@ -220,6 +236,14 @@ func (h *AdminHandler) RevokeShare(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid share ID")
+		return
+	}
+
+	// A caller may scope the action to an owner. The plugin does this so one
+	// Jellyfin user cannot revoke another user's share by its id; a caller holding
+	// the backend key and omitting it keeps full admin reach.
+	if !h.ownedBy(r, id) {
+		writeError(w, http.StatusForbidden, "share belongs to another user")
 		return
 	}
 
@@ -289,6 +313,11 @@ func (h *AdminHandler) GetShareAnalytics(w http.ResponseWriter, r *http.Request)
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid share ID")
+		return
+	}
+
+	if !h.ownedBy(r, id) {
+		writeError(w, http.StatusForbidden, "share belongs to another user")
 		return
 	}
 
