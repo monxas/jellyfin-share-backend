@@ -68,7 +68,9 @@ USER jfshare
 
 EXPOSE 8080
 
+# Follow JFSHARE_PORT rather than hard-coding a port: the compose files set 8097,
+# and a fixed 8080 here reports the container unhealthy while it is serving fine.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider "http://localhost:${JFSHARE_PORT:-8080}/health" || exit 1
 
 ENTRYPOINT ["/app/jfshare"]
