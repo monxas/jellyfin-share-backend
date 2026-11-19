@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -79,6 +80,10 @@ func (p *StreamProxy) ServeStream(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		path = "master.m3u8"
 	}
+	if !validStreamPath(path) {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
 
 	// Determine which item to stream
 	// For Season shares, the itemId or MediaSourceId query param specifies the episode
@@ -89,12 +94,29 @@ func (p *StreamProxy) ServeStream(w http.ResponseWriter, r *http.Request) {
 		itemID = mediaSourceID
 	}
 
+	if !validItemID(itemID) {
+		http.Error(w, "invalid item", http.StatusBadRequest)
+		return
+	}
+
 	// Build Jellyfin URL
 	jellyfinURL := p.buildJellyfinStreamURL(itemID, path, r.URL.RawQuery)
 
 	// Proxy the request
 	p.proxyRequest(w, r, jellyfinURL)
 }
+
+// The path and item ID are spliced into a Jellyfin URL that carries admin
+// credentials, so only plain HLS/segment names and Jellyfin IDs are allowed:
+// no "..", "?", "%" or "/"-prefixed segments that could reach other endpoints.
+var (
+	streamPathRe = regexp.MustCompile(`^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*\.(m3u8|ts|m4s|mp4)$|^stream$`)
+	itemIDRe     = regexp.MustCompile(`^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+)
+
+func validStreamPath(path string) bool { return streamPathRe.MatchString(path) }
+
+func validItemID(id string) bool { return itemIDRe.MatchString(id) }
 
 func (p *StreamProxy) buildJellyfinStreamURL(itemID, path, query string) string {
 	baseURL := p.jf.BaseURL()
